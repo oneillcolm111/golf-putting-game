@@ -137,7 +137,7 @@
   const HORIZON_Y = H * 0.17;
   const BASE_Y = H * 0.94;
   const PERSP_K = 0.05;
-  const PX_PER_UNIT = 62;
+  const PX_PER_UNIT = 64;
 
   function scaleAt(z) { return 1 / (1 + z * PERSP_K); }
   function screenY(z) {
@@ -149,35 +149,39 @@
 
   // ---- Hole definitions ----
   const HOLES = [
-    { par: 2, length: 13, width: 6, slope: { type: 'flat' },
+    { par: 2, length: 13, width: 7.5, slope: { type: 'tilt', ax: 0.28 },
       hazards: [] },
-    { par: 2, length: 16, width: 6, slope: { type: 'tilt', ax: 0.55 },
+    { par: 2, length: 16, width: 7.5, slope: { type: 'tilt', ax: 0.55 },
       hazards: [] },
-    { par: 3, length: 19, width: 7, slope: { type: 'valley', k: 0.16 },
+    { par: 3, length: 19, width: 8.5, slope: { type: 'valley', k: 0.16 },
       hazards: [{ type: 'sand', xMin: 1.2, xMax: 3.3, zMin: 8, zMax: 12 }] },
-    { par: 3, length: 21, width: 7, slope: { type: 'flat' },
+    { par: 3, length: 21, width: 8.5, slope: { type: 'valley', k: 0.07 },
       hazards: [{ type: 'water', xMin: -3.5, xMax: 1.0, zMin: 10, zMax: 13 }] },
-    { par: 3, length: 22, width: 8, slope: { type: 'ridge', k: 0.20 },
+    { par: 3, length: 22, width: 9.5, slope: { type: 'ridge', k: 0.20 },
       hazards: [] },
-    { par: 3, length: 20, width: 7, slope: { type: 'tilt', ax: -0.35 },
+    { par: 3, length: 20, width: 8.5, slope: { type: 'tilt', ax: -0.35 },
       hazards: [{ type: 'sand', xMin: -1.8, xMax: 1.8, zMin: 9, zMax: 13 }] },
-    { par: 4, length: 28, width: 8, slope: { type: 'scurve', k: 0.55, freq: 0.28 },
+    { par: 4, length: 28, width: 9.5, slope: { type: 'scurve', k: 0.55, freq: 0.28 },
       hazards: [] },
-    { par: 3, length: 18, width: 5, slope: { type: 'flat' },
+    { par: 3, length: 18, width: 6, slope: { type: 'valley', k: 0.05 },
       hazards: [
-        { type: 'water', xMin: -4.5, xMax: -1.6, zMin: 0, zMax: 18 },
-        { type: 'water', xMin: 1.6, xMax: 4.5, zMin: 0, zMax: 18 }
+        { type: 'water', xMin: -3, xMax: -1.5, zMin: 0, zMax: 18 },
+        { type: 'water', xMin: 1.5, xMax: 3, zMin: 0, zMax: 18 }
       ] },
-    { par: 4, length: 24, width: 9, slope: { type: 'valley', k: 0.10 },
-      hazards: [{ type: 'water', ring: true, cx: 0, cz: 24, safeRadius: 2.6, xMin: -4.5, xMax: 4.5, zMin: 18, zMax: 26 }] }
+    { par: 4, length: 24, width: 10, slope: { type: 'valley', k: 0.10 },
+      hazards: [{ type: 'water', ring: true, cx: 0, cz: 24, safeRadius: 2.8, xMin: -5, xMax: 5, zMin: 18, zMax: 26 }] }
   ];
 
-  const HOLE_RADIUS = 0.45;
+  const HOLE_RADIUS = 0.55;
+  const CAPTURE_RADIUS = 1.15;
+  const CAPTURE_SPEED = 8.5;
+  const MAGNET_STRENGTH = 2.4;
   const BALL_RADIUS = 0.16;
   const FRICTION = 1.35;
   const FRICTION_SAND = 4.6;
-  const MAX_SPEED = 13.5;
-  const MAX_DRAG_PX = 130;
+  const MAX_SPEED = 19;
+  const MAX_DRAG_PX = 105;
+  const POWER_CURVE = 0.6;
   const STOP_SPEED = 0.12;
 
   let state = {
@@ -349,7 +353,8 @@
     const dy = state.dragCurrent.y - dragStart.y;
     const dist = Math.hypot(dx, dy);
     if (dist < 10) { dragStart = null; return; }
-    const power = Math.min(dist, MAX_DRAG_PX) / MAX_DRAG_PX;
+    const rawPower = Math.min(dist, MAX_DRAG_PX) / MAX_DRAG_PX;
+    const power = Math.pow(rawPower, POWER_CURVE);
     const shotX = -dx;
     const shotZ = dy; // screen "up" (negative dy) => world forward (+z)
     const len = Math.hypot(shotX, shotZ) || 1;
@@ -375,11 +380,24 @@
     if (ball.resting || state.holedOut) return;
     const hole = currentHole();
     const inSand = hazardAt(ball.x, ball.z, hole) && hazardAt(ball.x, ball.z, hole).type === 'sand';
-    const friction = inSand ? FRICTION_SAND : FRICTION;
+    let friction = inSand ? FRICTION_SAND : FRICTION;
 
     const { ax, az } = getSlopeAccel(ball.x, ball.z, hole);
-    ball.vx += ax * dt;
-    ball.vz += az * dt;
+    let accelX = ax, accelZ = az;
+
+    // magnet pull: putts that finish close to the cup curve in rather than needing pixel-perfect aim
+    const dxHole = 0 - ball.x, dzHole = hole.length - ball.z;
+    const distNow = Math.hypot(dxHole, dzHole);
+    const speedNow = Math.hypot(ball.vx, ball.vz);
+    if (distNow > 0.01 && distNow < CAPTURE_RADIUS && speedNow < CAPTURE_SPEED) {
+      const pull = MAGNET_STRENGTH * (1 - distNow / CAPTURE_RADIUS);
+      accelX += (dxHole / distNow) * pull;
+      accelZ += (dzHole / distNow) * pull;
+      friction *= 1.5;
+    }
+
+    ball.vx += accelX * dt;
+    ball.vz += accelZ * dt;
 
     const speed = Math.hypot(ball.vx, ball.vz);
     if (speed > 0) {
@@ -405,7 +423,7 @@
     const distToHole = Math.hypot(ball.x - 0, ball.z - hole.length);
     const curSpeed = Math.hypot(ball.vx, ball.vz);
 
-    if (distToHole < HOLE_RADIUS && curSpeed < 6.5) {
+    if (distToHole < HOLE_RADIUS && curSpeed < CAPTURE_SPEED) {
       finishHole();
       return;
     }
@@ -552,7 +570,7 @@
     const ex = p.sx - Math.cos(ang) * aimLen;
     const ey = p.sy - Math.sin(ang) * aimLen;
 
-    const power = dist / MAX_DRAG_PX;
+    const power = Math.pow(dist / MAX_DRAG_PX, POWER_CURVE);
     ctx.strokeStyle = power > 0.75 ? '#ff5757' : power > 0.4 ? '#ffd76e' : '#7dffb0';
     ctx.lineWidth = 3;
     ctx.setLineDash([6, 6]);
